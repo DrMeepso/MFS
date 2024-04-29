@@ -1,7 +1,5 @@
-import { FileDictionaryEntry, FileHeader, StringArrayEntry } from "./types";
 import fs from 'fs';
 import path from "path";
-import { text } from "stream/consumers";
 
 type FileArrayEntry = {
     fileName: string;
