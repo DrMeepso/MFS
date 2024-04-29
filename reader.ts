@@ -63,10 +63,9 @@ class ReadableFile {
     private readEFile(): string {
         
         const dir = path.join(this.parentReader.workingDirectory, this.thisFile.linkedFileName)
-        console.log(dir)
         const externalFile = fs.readFileSync(dir);
-        console.log(new TextDecoder().decode(externalFile))
-        const view = new DataView(externalFile.buffer);
+        const buf = Uint8Array.from(externalFile);
+        const view = new DataView(buf.buffer);
 
         let pointer = this.thisFile.offset;
 
@@ -189,7 +188,7 @@ export class MFSReader {
             }
 
             const readableFile = new ReadableFile(this, thisFile);
-            console.log(readableFile.read())
+            console.log("File:", readableFile.read())
 
         }
 
