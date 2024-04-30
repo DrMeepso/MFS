@@ -12,16 +12,20 @@ type float32 = number // min: 1.40129846432481707e-45, max: 3.40282346638528860e
 type float64 = number // min: 4.94065645841246544e-324, max: 1.79769313486231570e+308
 type char = string // a ascii character is 8 bits
 
-// size: 25 bytes
+// size: 34 bytes
 type FileHeader = {
     magic: char[4] // "MFS." // 777209421 // 0x4D46532E
     version: uint8 // 1
 
     fileDictionaryLength: uint64 // number of entries in the file dictionary, i dont think there is going to be more than 4 billion entries
-    stringArrayLength: uint64 // the byte offset from the start of the file
+    stringArrayCount: uint64 // number of entries in the array of strings
+    stringArrayLength: uint64 // the length in bytes of the string array
 
     // custom data, to allow for any extra data to be stored about the file
     customDataStringArrayIndex: uint32 // the index of the string in the string array
+
+    // this compression is used for the string array and custom data
+    compressionType: uint8 // 0: none, 1: brotli, 2: gzip // this can be extended to support more compression types
 }
 
 // size: 8 + length bytes
@@ -69,7 +73,7 @@ export enum CompressionType {
 type AttachedFile = {
     name: string
     data: ArrayBuffer
-    customData: string
+    customData: string | ArrayBuffer
     compressionType: CompressionType
 }
 
@@ -78,7 +82,7 @@ type ExternalFile = {
     filename: string
     offset: number
     length: number
-    customData: string,
+    customData: string | ArrayBuffer,
     compressionType: CompressionType
 }
 

@@ -10,12 +10,14 @@ type WorkingFile = {
 
 export class MFSWriter {
 
-    fileCustomProperty: string = 'A Meepso File System File!';
+    fileCustomProperty: string = 'Modular File System';
 
     containingFiles: AttachedFile[] = [];
     externalFiles: ExternalFile[] = [];
 
-    constructor() {}
+    customdataCompressionType: CompressionType = CompressionType.None;
+
+    constructor() { }
 
     setCustomProperty(value: string) {
         this.fileCustomProperty = value;
@@ -46,7 +48,11 @@ export class MFSWriter {
         this.externalFiles.push({ name, ...fileinfo, customData, compressionType: compression } as ExternalFile)
     }
 
-    private stringArray(strings: string[]) : ArrayBuffer {
+    setCustomDataCompressionType(compressionType: CompressionType) {
+        this.customdataCompressionType = compressionType;
+    }
+
+    private stringArray(strings: string[]): ArrayBuffer {
         const buffer = new ArrayBuffer(strings.join("").length + (strings.length * 4));
         const view = new DataView(buffer);
         let pointer = 0;
@@ -63,14 +69,16 @@ export class MFSWriter {
     }
 
     private headerToBuffer(header: FileHeader): ArrayBuffer {
-        const buffer = new ArrayBuffer(25);
+        const buffer = new ArrayBuffer(34);
         const view = new DataView(buffer);
 
         view.setUint32(0, 777209421, true); // MFS.
         view.setUint8(4, header.version);
         view.setBigUint64(5, BigInt(header.fileDictionaryLength), true);
-        view.setBigUint64(13, BigInt(header.stringArrayLength), true);
-        view.setUint32(21, header.customDataStringArrayIndex, true);
+        view.setBigUint64(13, BigInt(header.stringArrayCount), true);
+        view.setBigUint64(21, BigInt(header.stringArrayLength), true);
+        view.setUint32(29, header.customDataStringArrayIndex, true);
+        view.setUint8(33, header.compressionType);
 
         return buffer;
     }
@@ -102,6 +110,17 @@ export class MFSWriter {
         return index;
     }
 
+    private async compressData(data: ArrayBuffer): Promise<ArrayBuffer> {
+        switch (this.customdataCompressionType) {
+            case CompressionType.Brotli:
+                return await CompressBrotli(data);
+            case CompressionType.Gzip:
+                return await CompressGzip(data);
+            default:
+                return data;
+        }
+    }
+
     async export(): Promise<ArrayBuffer> {
 
         const fileStrings: string[] = [];
@@ -111,34 +130,39 @@ export class MFSWriter {
             magic: 'MFS.',
             version: 1,
             fileDictionaryLength: -1,
+            stringArrayCount: -1,
             stringArrayLength: -1,
-            customDataStringArrayIndex: this.addStringToList(this.fileCustomProperty, fileStrings)
+            customDataStringArrayIndex: this.addStringToList(this.fileCustomProperty, fileStrings),
+            compressionType: this.customdataCompressionType.valueOf()
         } as FileHeader
 
         // containing files
         for (const file of this.containingFiles) {
 
-            const nameStringIndex = this.addStringToList(file.name, fileStrings);
-
-            let compressionType: number = 0;
-            if (file.compressionType != undefined) {
-                compressionType = file.compressionType.valueOf();
+            // if the custom dats isnt a arraybuffer we need to convert it
+            let customDataBuffer = new ArrayBuffer(0);
+            if (typeof file.customData != 'string') {
+                customDataBuffer = file.customData as ArrayBuffer;
             } else {
-                compressionType = 0;
+                customDataBuffer = new TextEncoder().encode(file.customData);
             }
+
+            file.customData = await this.compressData(customDataBuffer)
+
+            const nameStringIndex = this.addStringToList(file.name, fileStrings);
 
             const FileEntry = {
                 nameStringArrayIndex: nameStringIndex,
                 filenameStringArrayIndex: 0, // 0 means the file is in this file
                 offset: 0, // will be set later
                 length: file.data.byteLength,
-                compressionType: compressionType, // 0: none, 1: brotli, 2: gzip
+                compressionType: file.compressionType.valueOf(), // 0: none, 1: brotli, 2: gzip
                 uncompressedLength: 7308332045228794194n, // since these arent used we can put some text in for fun!
                 customDataOffset: 0, // will be set later
-                customDataLength: file.customData.length
+                customDataLength: file.customData.byteLength
             } as FileDictionaryEntry
 
-            switch (compressionType) {
+            switch (file.compressionType.valueOf()) {
                 case CompressionType.Brotli:
                     FileEntry.uncompressedLength = BigInt(file.data.byteLength);
                     let compressedData = await CompressBrotli(file.data);
@@ -162,26 +186,29 @@ export class MFSWriter {
         // external files
         for (const file of this.externalFiles) {
 
+            // if the custom dats isnt a arraybuffer we need to convert it
+            let customDataBuffer = new ArrayBuffer(0);
+            if (typeof file.customData != 'string') {
+                customDataBuffer = file.customData as ArrayBuffer;
+            } else {
+                customDataBuffer = new TextEncoder().encode(file.customData);
+            }
+
+            file.customData = await this.compressData(customDataBuffer)
+
             const nameStringIndex = this.addStringToList(file.name, fileStrings);
             const filenameStringIndex = this.addStringToList(file.filename, fileStrings);
-
-            let compressionType: number = 0;
-            if (file.compressionType != undefined) {
-                compressionType = file.compressionType.valueOf();
-            } else {
-                compressionType = 0;
-            }
 
             const FileEntry = {
                 nameStringArrayIndex: nameStringIndex,
                 filenameStringArrayIndex: filenameStringIndex + 1, // +1 means the file is in another file
                 offset: file.offset, // will be set later
                 length: file.length, // will be set later
-                compressionType: compressionType, // 0: none, 1: brotli, 2: gzip
+                compressionType: file.compressionType.valueOf(), // 0: none, 1: brotli, 2: gzip
                 // we dont know the uncompressed length of a external file because we didnt compress it...
                 uncompressedLength: 7308332045227682116n, // since these arent used we can put some text in for fun!
                 customDataOffset: 0, // will be set later
-                customDataLength: file.customData.length
+                customDataLength: file.customData.byteLength
             } as FileDictionaryEntry
 
             files.push({ WriteFile: file, FileEntry } as WorkingFile);
@@ -189,20 +216,24 @@ export class MFSWriter {
         }
 
         header.fileDictionaryLength = files.length;
-        header.stringArrayLength = fileStrings.length
+        header.stringArrayCount = fileStrings.length
+
+        let uncStringBuffer = this.stringArray(fileStrings);
+        let stringBuffer = await this.compressData(uncStringBuffer);
+
+        header.stringArrayLength = stringBuffer.byteLength;
 
         let headerBuffer = new Uint8Array(this.headerToBuffer(header));
-        let stringBuffer = this.stringArray(fileStrings);
 
         const lengthOfHeader = headerBuffer.byteLength + stringBuffer.byteLength + (files.length * 45);
-
         const lengthOfFiles = files.reduce((acc, file) => acc + (file.FileEntry.filenameStringArrayIndex > 0 ? 0 : file.FileEntry.length) + file.FileEntry.customDataLength, 0);
 
         let fullBuffer = new Uint8Array(lengthOfHeader + lengthOfFiles);
+
         fullBuffer.set(new Uint8Array(headerBuffer), 0);
         fullBuffer.set(new Uint8Array(stringBuffer), headerBuffer.byteLength + (files.length * 45));
 
-        let pointer = headerBuffer.byteLength + stringBuffer.byteLength + (files.length * 45);
+        let pointer = lengthOfHeader;
         for (let i = 0; i < files.length; i++) {
             let thisFile: AttachedFile = files[i].WriteFile as unknown as AttachedFile;
             // check if the file is to be stored in this file or is a external file
@@ -214,21 +245,26 @@ export class MFSWriter {
                 thisFileEntry.offset = pointer
                 pointer += fileBuffer.byteLength;
 
-                fullBuffer.set(new Uint8Array(new TextEncoder().encode(thisFile.customData)), pointer);
+                if (typeof thisFile.customData == 'string') continue
+                let customDataBuffer = new Uint8Array(thisFile.customData);
+                //customDataBuffer = new Uint8Array(await this.compressData(customDataBuffer))
+
+                fullBuffer.set(customDataBuffer, pointer);
                 thisFileEntry.customDataOffset = pointer
-                pointer += thisFile.customData.length;
+                pointer += customDataBuffer.byteLength;
 
             } else {
                 // a external file only writes its custom data
                 let thisFileEntry: FileDictionaryEntry = files[i].FileEntry;
 
-                fullBuffer.set(new Uint8Array(new TextEncoder().encode(thisFile.customData)), pointer);
+                if (typeof thisFile.customData == 'string') continue
+                fullBuffer.set(new Uint8Array(new Uint8Array(thisFile.customData)), pointer);
                 thisFileEntry.customDataOffset = pointer
-                pointer += thisFile.customData.length;
+                pointer += thisFile.customData.byteLength;
             }
 
             let fileBuffer = this.fileToBuffer(files[i].FileEntry);
-            fullBuffer.set(new Uint8Array(fileBuffer),headerBuffer.byteLength + (i * 45));
+            fullBuffer.set(new Uint8Array(fileBuffer), headerBuffer.byteLength + (i * 45));
         }
 
         return fullBuffer.buffer

@@ -50,7 +50,7 @@ class ReadableFile {
     private async decompress(data: Uint8Array): Promise<Uint8Array> {
 
         let uncompressedData = data.buffer
-        switch(this.thisFile.compressionType) {
+        switch (this.thisFile.compressionType) {
             case CompressionType.Brotli:
                 uncompressedData = await DecompressBrotli(data);
                 break;
@@ -79,7 +79,7 @@ class ReadableFile {
     }
 
     private async readEFile(): Promise<Uint8Array> {
-        
+
         const dir = path.join(this.parentReader.workingDirectory, this.thisFile.linkedFileName)
         const externalFile = fs.readFileSync(dir);
         const buf = Uint8Array.from(externalFile);
@@ -109,6 +109,8 @@ export class MFSReader {
 
     public files: ReadableFile[] = [];
 
+    private customDataCompressionType: CompressionType = CompressionType.None;
+
     static from(file: string) {
         let encoder = new TextEncoder();
         let reader: MFSReader = new MFSReader(new Uint8Array(fs.readFileSync(file).buffer));
@@ -116,10 +118,28 @@ export class MFSReader {
         return reader;
     }
 
+    private async decompress(data: Uint8Array): Promise<Uint8Array> {
+
+        let uncompressedData = data.buffer
+        switch (this.customDataCompressionType) {
+            case CompressionType.Brotli:
+                uncompressedData = await DecompressBrotli(data);
+                break;
+            case CompressionType.Gzip:
+                uncompressedData = await DecompressGzip(data);
+                break;
+        }
+
+        return new Uint8Array(uncompressedData);
+
+    }
+
     constructor(file: Uint8Array) {
         this.file = file;
+    }
 
-        let view = new DataView(file.buffer);
+    public async readFile() {
+        let view = new DataView(this.file.buffer);
         let pointer = 0;
 
         // read the header
@@ -135,20 +155,32 @@ export class MFSReader {
 
         let fileDictionaryLength = view.getBigUint64(pointer, true);
         pointer += 8;
+        let stringArrayCount = view.getBigUint64(pointer, true);
+        pointer += 8;
         let stringArrayLength = view.getBigUint64(pointer, true);
         pointer += 8;
 
         let customDataStringArrayIndex = view.getUint32(pointer, true);
         pointer += 4;
 
-        this.readStringArray(view, fileDictionaryLength, stringArrayLength);
-        this.readFileArray(view, fileDictionaryLength);
+        this.customDataCompressionType = view.getUint8(pointer);
+        pointer += 1;
 
+        // read the string array
+        let stringsStart = Number(34n + (45n * fileDictionaryLength));
+        let stringEnd = stringsStart + Number(stringArrayLength);
+
+        let compressedStrings = new Uint8Array(this.file.slice(stringsStart, stringEnd));
+        let data = await this.decompress(compressedStrings);
+
+        let stringsView = new DataView(data.buffer);
+
+        this.readStringArray(stringsView, fileDictionaryLength, stringArrayCount);
+        await this.readFileArray(view, fileDictionaryLength);
     }
 
     private readStringArray(view: DataView, fileDictionaryLength: bigint, stringArrayLength: bigint) {
-        // p = header + (45 * fileDictionaryLength)
-        let pointer = Number(25n + (45n * fileDictionaryLength))
+        let pointer = 0;
 
         for (let i = 0; i < stringArrayLength; i++) {
             let length = view.getUint32(pointer, true);
@@ -165,9 +197,9 @@ export class MFSReader {
 
     }
 
-    private readFileArray(view: DataView, fileDictionaryLength: bigint) {
+    private async readFileArray(view: DataView, fileDictionaryLength: bigint) {
         // we move the pointer to the end of the header and start of the file dictionary
-        let pointer = 25
+        let pointer = 34
 
         for (let i = 0; i < fileDictionaryLength; i++) {
             let nameStringArrayIndex = view.getUint32(pointer, true);
@@ -197,12 +229,16 @@ export class MFSReader {
                 customData: '' // we will read this later
             } as FileArrayEntry
 
+
             // its later, and time to read that custom data!
             let tmpPointer = customDataOffset
+            let customDataBuffer = new Uint8Array(Number(customDataLength));
             for (let j = 0n; j < customDataLength; j++) {
-                thisFile.customData += String.fromCharCode(view.getUint8(Number(tmpPointer)));
+                customDataBuffer[Number(j)] = view.getUint8(Number(tmpPointer));
                 tmpPointer++;
             }
+
+            thisFile.customData = new TextDecoder().decode(await this.decompress(customDataBuffer));
 
             const readableFile = new ReadableFile(this, thisFile);
             this.files.push(readableFile);
