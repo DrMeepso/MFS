@@ -59,11 +59,18 @@ type MFSFile = {
     fileData: uint8[]
 }
 
+export enum CompressionType {
+    None = 0,
+    Brotli = 1,
+    Gzip = 2
+}
+
 // used by the MFSReader and MFSWriter
 type AttachedFile = {
     name: string
     data: ArrayBuffer
     customData: string
+    compressionType: CompressionType
 }
 
 type ExternalFile = {
@@ -71,7 +78,8 @@ type ExternalFile = {
     filename: string
     offset: number
     length: number
-    customData: string
+    customData: string,
+    compressionType: CompressionType
 }
 
 type ExternalFileConfig = {

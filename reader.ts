@@ -1,5 +1,7 @@
 import fs from 'fs';
 import path from "path";
+import { DecompressBrotli, DecompressGzip } from './asynclibz';
+import { CompressionType } from './types';
 
 type FileArrayEntry = {
     fileName: string;
@@ -35,17 +37,33 @@ class ReadableFile {
 
     }
 
-    read(): string {
+    async read(): Promise<Uint8Array> {
 
         if (this.externalFile) {
-            return this.readEFile();
+            return await this.readEFile();
         } else {
-            return this.readLFile();
+            return await this.readLFile();
         }
 
     }
 
-    private readLFile(): string {
+    private async decompress(data: Uint8Array): Promise<Uint8Array> {
+
+        let uncompressedData = data.buffer
+        switch(this.thisFile.compressionType) {
+            case CompressionType.Brotli:
+                uncompressedData = await DecompressBrotli(data);
+                break;
+            case CompressionType.Gzip:
+                uncompressedData = await DecompressGzip(data);
+                break;
+        }
+
+        return new Uint8Array(uncompressedData);
+
+    }
+
+    private async readLFile(): Promise<Uint8Array> {
 
         const view = new DataView(this.parentReader.file.buffer);
         let pointer = Number(this.thisFile.offset);
@@ -57,10 +75,10 @@ class ReadableFile {
             pointer++;
         }
 
-        return new TextDecoder().decode(buffer);
+        return await this.decompress(buffer);
     }
 
-    private readEFile(): string {
+    private async readEFile(): Promise<Uint8Array> {
         
         const dir = path.join(this.parentReader.workingDirectory, this.thisFile.linkedFileName)
         const externalFile = fs.readFileSync(dir);
@@ -76,7 +94,7 @@ class ReadableFile {
             pointer++;
         }
 
-        return new TextDecoder().decode(buffer);
+        return await this.decompress(buffer);
 
     }
 
@@ -88,6 +106,8 @@ export class MFSReader {
     private fileStrings: string[] = [];
 
     public workingDirectory: string = path.resolve(process.cwd());
+
+    public files: ReadableFile[] = [];
 
     static from(file: string) {
         let encoder = new TextEncoder();
@@ -122,10 +142,7 @@ export class MFSReader {
         pointer += 4;
 
         this.readStringArray(view, fileDictionaryLength, stringArrayLength);
-        console.log(this.fileStrings);
-
         this.readFileArray(view, fileDictionaryLength);
-        console.log(this.workingDirectory)
 
     }
 
@@ -188,7 +205,7 @@ export class MFSReader {
             }
 
             const readableFile = new ReadableFile(this, thisFile);
-            console.log("File:", readableFile.read())
+            this.files.push(readableFile);
 
         }
 

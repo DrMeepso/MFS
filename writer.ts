@@ -1,9 +1,12 @@
-import { AttachedFile, ExternalFile, ExternalFileConfig, FileDictionaryEntry, FileHeader } from "./types";
+import { AttachedFile, ExternalFile, ExternalFileConfig, FileDictionaryEntry, FileHeader, CompressionType } from "./types";
+import { CompressBrotli, CompressGzip } from "./asynclibz";
+import fs from 'fs';
 
 type WorkingFile = {
     WriteFile: AttachedFile | ExternalFile;
     FileEntry: FileDictionaryEntry;
 }
+
 
 export class MFSWriter {
 
@@ -18,12 +21,29 @@ export class MFSWriter {
         this.fileCustomProperty = value;
     }
 
-    addFile(name: string, data: ArrayBuffer, customData: string) {
-        this.containingFiles.push({ name, data, customData } as AttachedFile);
+    addFile(name: string, data: ArrayBuffer, customData: string, compressionType?: CompressionType) {
+        let compression: CompressionType = CompressionType.None;
+        if (compressionType != undefined) {
+            compression = compressionType;
+        }
+        this.containingFiles.push({ name, data, customData, compressionType: compression } as AttachedFile);
     }
 
-    addExternalFile(name: string, fileinfo: ExternalFileConfig, customData: string) {
-        this.externalFiles.push({ name, ...fileinfo, customData } as ExternalFile)
+    addFileFromPath(name: string, path: string, customData: string, compressionType?: CompressionType) {
+        let compression: CompressionType = CompressionType.None;
+        if (compressionType != undefined) {
+            compression = compressionType;
+        }
+        let data = fs.readFileSync(path).buffer;
+        this.containingFiles.push({ name, data, customData, compressionType: compression } as AttachedFile);
+    }
+
+    addExternalFile(name: string, fileinfo: ExternalFileConfig, customData: string, compressionType?: CompressionType) {
+        let compression: CompressionType = CompressionType.None;
+        if (compressionType != undefined) {
+            compression = compressionType;
+        }
+        this.externalFiles.push({ name, ...fileinfo, customData, compressionType: compression } as ExternalFile)
     }
 
     private stringArray(strings: string[]) : ArrayBuffer {
@@ -82,7 +102,7 @@ export class MFSWriter {
         return index;
     }
 
-    export(): ArrayBuffer {
+    async export(): Promise<ArrayBuffer> {
 
         const fileStrings: string[] = [];
         const files: WorkingFile[] = [];
@@ -100,16 +120,40 @@ export class MFSWriter {
 
             const nameStringIndex = this.addStringToList(file.name, fileStrings);
 
+            let compressionType: number = 0;
+            if (file.compressionType != undefined) {
+                compressionType = file.compressionType.valueOf();
+            } else {
+                compressionType = 0;
+            }
+
             const FileEntry = {
                 nameStringArrayIndex: nameStringIndex,
                 filenameStringArrayIndex: 0, // 0 means the file is in this file
                 offset: 0, // will be set later
                 length: file.data.byteLength,
-                compressionType: 0, // 0: none, 1: brotli, 2: gzip
+                compressionType: compressionType, // 0: none, 1: brotli, 2: gzip
                 uncompressedLength: 7308332045228794194n, // since these arent used we can put some text in for fun!
                 customDataOffset: 0, // will be set later
                 customDataLength: file.customData.length
             } as FileDictionaryEntry
+
+            switch (compressionType) {
+                case CompressionType.Brotli:
+                    FileEntry.uncompressedLength = BigInt(file.data.byteLength);
+                    let compressedData = await CompressBrotli(file.data);
+                    FileEntry.length = compressedData.byteLength;
+                    file.data = compressedData;
+                    break;
+                case CompressionType.Gzip:
+                    FileEntry.uncompressedLength = BigInt(file.data.byteLength);
+                    let compressedDataGzip = await CompressGzip(file.data);
+                    FileEntry.length = compressedDataGzip.byteLength;
+                    file.data = compressedDataGzip;
+                    break;
+                default:
+                    break;
+            }
 
             files.push({ WriteFile: file, FileEntry } as WorkingFile);
 
@@ -121,12 +165,20 @@ export class MFSWriter {
             const nameStringIndex = this.addStringToList(file.name, fileStrings);
             const filenameStringIndex = this.addStringToList(file.filename, fileStrings);
 
+            let compressionType: number = 0;
+            if (file.compressionType != undefined) {
+                compressionType = file.compressionType.valueOf();
+            } else {
+                compressionType = 0;
+            }
+
             const FileEntry = {
                 nameStringArrayIndex: nameStringIndex,
                 filenameStringArrayIndex: filenameStringIndex + 1, // +1 means the file is in another file
                 offset: file.offset, // will be set later
                 length: file.length, // will be set later
-                compressionType: 0, // 0: none, 1: brotli, 2: gzip
+                compressionType: compressionType, // 0: none, 1: brotli, 2: gzip
+                // we dont know the uncompressed length of a external file because we didnt compress it...
                 uncompressedLength: 7308332045227682116n, // since these arent used we can put some text in for fun!
                 customDataOffset: 0, // will be set later
                 customDataLength: file.customData.length
