@@ -1,1 +1,1 @@
-Pretty much a .zip archive but you can add some custom data to each file, usefull for tagging and such
+Pretty much a zip file without directorys and you can link in data from other files as apart of the bundle 
